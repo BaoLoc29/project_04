@@ -80,9 +80,19 @@ export const login = async (req, res) => {
 export const createUser = async (req, res) => {
     const { hashSync, genSaltSync } = bcrypt;
     try {
-        const { name, gender, phone, email, password } = req.body;
+        const { name, gender, phone, email, password, role } = req.body;
 
         const createSchema = joi.object({
+            name: joi.string().required().messages({
+                'string.empty': 'Name is required'
+            }),
+            gender: joi.boolean().required().messages({
+                'boolean.empty': 'Gender is required'
+            }),
+            phone: joi.string().length(10).required().messages({
+                "string.length": "Phone must have 10 digits",
+                "any.required": "Please enter your Phone"
+            }),
             email: joi.string().email().required().messages({
                 'string.email': 'Invalid email',
                 'string.empty': 'Email is required'
@@ -91,20 +101,13 @@ export const createUser = async (req, res) => {
                 'string.min': 'Password must be at least 6 characters',
                 'string.empty': 'Password is required'
             }),
-            name: joi.string().required().messages({
-                'string.empty': 'Name is required'
-            }),
-            gender: joi.boolean().required().messages({
-                'boolean.empty': 'Gender is required'
-            }),
-            phone: joi.string().min(10).max(10).required().messages({
-                "string.min": "Phone must have a minimum of 10 digits",
-                "string.max": "Phone must have a maximum of 10 digits",
-                "any.required": "Please enter your Phone"
+            role: joi.string().valid('manage', 'employee').required().messages({
+                'string.empty': `Role is required`,
+                'any.only': "Role must be either 'manage' or 'employee'"
             }),
         });
 
-        const { error } = createSchema.validate({ name, gender, phone, email, password });
+        const { error } = createSchema.validate({ name, gender, phone, email, password, role });
         if (error) {
             return res.status(400).json({
                 error: error.details.map(e => e.message)
@@ -116,15 +119,39 @@ export const createUser = async (req, res) => {
             return res.status(400).json({ message: "User email is already in use. Try using another email." });
         }
 
+        // Xác định tiền tố cho e_code dựa trên vai trò
+        let prefix;
+        if (role === 'manage') {
+            prefix = 'QL';
+        } else if (role === 'employee') {
+            prefix = 'NV';
+        } else {
+            return res.status(400).json({ message: "Invalid role. Role must be either 'manager' or 'employee'." });
+        }
+
+        // Tìm người dùng có e_code hiện có cao nhất dựa trên tiền tố
+        const latestUser = await User.findOne({ e_code: new RegExp(`^${prefix}`) }).sort({ e_code: -1 }).exec();
+        let newECode;
+        if (latestUser && latestUser.e_code) {
+            // Tách số ra khỏi chữ và tăng lên 1
+            const latestECode = latestUser.e_code;
+            const numericPart = parseInt(latestECode.slice(2)) + 1;
+            newECode = `${prefix}${numericPart.toString().padStart(3, '0')}`;
+        } else {
+            newECode = `${prefix}001`;
+        }
+
         const salt = genSaltSync();
         const hashedPassword = hashSync(password, salt);
 
-        const result = await User.create({ name, gender, phone, email, password: hashedPassword });
+        const result = await User.create({ e_code: newECode, name, gender, phone, email, password: hashedPassword, role });
 
         return res.status(200).json({
             message: "Account has been successfully created.",
-            ...result.toObject(),
-            createdAt: formatCreatedAt(result.createdAt)
+            user: {
+                ...result.toObject(),
+                createdAt: formatCreatedAt(result.createdAt)
+            }
         });
     } catch (error) {
         return res.status(500).json({ message: error.message });
@@ -132,10 +159,20 @@ export const createUser = async (req, res) => {
 }
 export const editUser = async (req, res) => {
     try {
-        const { name, gender, phone, email, password } = req.body;
+        const { name, gender, phone, email, password, role } = req.body;
         const { id } = req.params;
 
         const editSchema = joi.object({
+            name: joi.string().required().messages({
+                'string.empty': 'Name is required'
+            }),
+            gender: joi.boolean().required().messages({
+                'boolean.empty': 'Gender is required'
+            }),
+            phone: joi.string().length(10).required().messages({
+                "string.length": "Phone must have 10 digits",
+                "any.required": "Please enter your Phone"
+            }),
             email: joi.string().email().required().messages({
                 'string.email': 'Invalid email',
                 'string.empty': 'Email is required'
@@ -144,36 +181,56 @@ export const editUser = async (req, res) => {
                 'string.min': 'Password must be at least 6 characters',
                 'string.empty': 'Password is required'
             }),
-            name: joi.string().required().messages({
-                'string.empty': 'Name is required'
-            }),
-            gender: joi.boolean().required().messages({
-                'boolean.empty': 'Gender is required'
-            }),
-            phone: joi.string().min(10).max(10).required().messages({
-                "string.min": "Phone must have a minimum of 10 digits",
-                "string.max": "Phone must have a maximum of 10 digits",
-                "any.required": "Please enter your Phone"
+            role: joi.string().valid('manage', 'employee').required().messages({
+                'string.empty': `Role is required`,
+                'any.only': "Role must be either 'manage' or 'employee'"
             }),
         })
-        const { error } = editSchema.validate({ name, gender, phone, email, password });
+        const { error } = editSchema.validate({ name, gender, phone, email, password, role });
         if (error) {
             return res.status(400).json({
                 error: error.details.map(e => e.message)
             });
         }
 
-        const findUser = await User.findOne({ email });
-        if (findUser) {
+        const findUserByEmail = await User.findOne({ email });
+        if (findUserByEmail && findUserByEmail._id.toString() !== id) {
             return res.status(400).json({ message: "User email is already in use. Try using another email." });
         }
 
         const updateUser = await User.findByIdAndUpdate(id, {
-            name, gender, email, phone
+            name, gender, email, phone, role
         }, { new: true }).select("-password")
 
         if (!updateUser) {
             return res.status(400).json({ message: "User is not found" })
+        }
+
+        let prefix;
+        if (role === 'manage') {
+            prefix = 'QL';
+        } else if (role === 'employee') {
+            prefix = 'NV';
+        } else {
+            return res.status(400).json({ message: "Invalid role. Role must be either 'manager' or 'employee'." });
+        }
+
+        if ((role === 'manage' && !updateUser.e_code.startsWith('QL')) ||
+            (role === 'employee' && !updateUser.e_code.startsWith('NV'))) {
+            // Tìm người dùng có mã nhân viên lớn nhất của vai trò mới
+            const latestUser = await User.findOne({ e_code: new RegExp(`^${prefix}`) }).sort({ e_code: -1 }).exec();
+            let newECode;
+            if (latestUser && latestUser.e_code) {
+                const latestECode = latestUser.e_code;
+                const numericPart = parseInt(latestECode.slice(2)) + 1;
+                newECode = `${prefix}${numericPart.toString().padStart(3, '0')}`;
+            } else {
+                newECode = `${prefix}001`;
+            }
+
+            // Cập nhật mã nhân viên mới cho người dùng
+            updateUser.e_code = newECode;
+            await updateUser.save();
         }
 
         return res.status(200).json({
@@ -204,11 +261,11 @@ export const deleteUser = async (req, res) => {
 export const getPagingUser = async (req, res) => {
     try {
         const query = req.query
-        const users = await User.find()
+        const users = await User.find({ role: "employee" })
             .skip(query.pageSize * query.pageIndex - query.pageSize)
             .limit(query.pageSize).sort({ createdAt: "desc" })
 
-        const countusers = await User.countDocuments()
+        const countusers = await User.countDocuments({ role: "employee" })
         const totalPage = Math.ceil(countusers / query.pageSize)
 
         // Format createdAt for each user
@@ -236,9 +293,11 @@ export const searchUser = async (req, res) => {
             searchField = { name: { $regex: keyword, $options: 'i' } };
         } else if (option === "email") {
             searchField = { email: { $regex: keyword, $options: 'i' } };
+        } else if (option === "e_code"){
+            searchField = { e_code: { $regex: keyword, $options: 'i' } };
         }
 
-        const users = await User.find({ ...searchField });
+        const users = await User.find({ ...searchField, role: 'employee' });
 
         if (!users || users.length === 0) {
             return res.status(404).json({ message: "User is not found" });

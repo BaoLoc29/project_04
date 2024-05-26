@@ -1,6 +1,10 @@
 import mongoose from "mongoose";
 
 const User = new mongoose.Schema({
+    e_code: {
+        type: String,
+        required: true
+    },
     name: {
         type: String,
         required: true
@@ -25,7 +29,6 @@ const User = new mongoose.Schema({
     role: {
         type: String,
         required: true,
-        default: "employee"
     },
 }, { timestamps: true })
 export default mongoose.model("users", User)
